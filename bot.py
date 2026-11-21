@@ -13,7 +13,6 @@ load_dotenv(os.path.join(FOLDER, ".env"))
 TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
 SEEN_FILE = os.path.join(FOLDER, "seen.json")
-MAX_POSTS = 8
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
@@ -33,9 +32,10 @@ def save_seen(seen):
 
 
 def job_message(job):
+    label = "Internship" if job["kind"] == "internship" else "Job"
     return (
         f"**{job['company']}** — {job['title']}\n"
-        f"{job['location']} | {job['source']}\n"
+        f"{job['location']} | {label} | {job['source']}\n"
         f"{job['link']}"
     )
 
@@ -49,17 +49,8 @@ async def check_jobs():
         return
 
     seen = load_seen()
-
-    # First run: remember current jobs, do not post the old list.
     if seen is None:
-        current = jobs.get_new_jobs(set())
-        if current is None:
-            print("Could not download job lists. Trying again later.")
-            return
-        save_seen({job["link"] for job in current})
-        await channel.send("Watching for new internships.")
-        print("Saved the current list. New internships will be posted next time.")
-        return
+        seen = set()
 
     new_jobs = jobs.get_new_jobs(seen)
     if new_jobs is None:
@@ -69,7 +60,7 @@ async def check_jobs():
     # Test: print how many new jobs we found
     print("New jobs found:", len(new_jobs))
 
-    for job in new_jobs[:MAX_POSTS]:
+    for job in new_jobs:
         await channel.send(job_message(job))
         seen.add(job["link"])
 

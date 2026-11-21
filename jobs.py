@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime, timedelta
 
 import requests
 
@@ -8,27 +9,51 @@ JOBRIGHT_LISTS = [
     (
         "https://raw.githubusercontent.com/jobright-ai/2026-Software-Engineer-Internship/master/README.md",
         "Jobright",
+        "internship",
     ),
     (
         "https://raw.githubusercontent.com/jobright-ai/2026-Data-Analysis-Internship/master/README.md",
         "Jobright",
+        "internship",
+    ),
+    (
+        "https://raw.githubusercontent.com/jobright-ai/2026-Software-Engineer-New-Grad/master/README.md",
+        "Jobright",
+        "job",
+    ),
+    (
+        "https://raw.githubusercontent.com/jobright-ai/2026-Data-Analysis-New-Grad/master/README.md",
+        "Jobright",
+        "job",
     ),
 ]
-SIMPLIFY_URL = (
-    "https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/"
-    "dev/.github/scripts/listings.json"
-)
+SIMPLIFY_LISTS = [
+    (
+        "https://raw.githubusercontent.com/SimplifyJobs/Summer2027-Internships/dev/.github/scripts/listings.json",
+        "Simplify",
+        "internship",
+    ),
+    (
+        "https://raw.githubusercontent.com/SimplifyJobs/New-Grad-Positions/dev/.github/scripts/listings.json",
+        "Simplify",
+        "job",
+    ),
+]
 
-# Keep Simplify rows whose title looks like a CS internship.
-CS_WORDS = [
-    "software",
-    "data",
-    "machine learning",
-    "cyber",
-    "developer",
-    "devops",
-    "security",
-    "artificial intelligence",
+# A listing has to be this new to be posted.
+RECENT_DAYS = 14
+INTERNSHIP_LIMIT = 3
+JOB_LIMIT = 2
+
+# Skip companies we do not want in the channel.
+BLOCKED_COMPANIES = ["palantir"]
+
+# Title phrases for the four fields the channel wants.
+ROLE_PHRASES = [
+    ("cyber", ["cyber", "information security", "security engineer", "security analyst", "appsec"]),
+    ("ai", ["artificial intelligence", "machine learning", "ml engineer", "generative ai"]),
+    ("data", ["data science", "data scientist", "data analyst", "data analysis", "data analytics", "data engineer"]),
+    ("swe", ["software", "developer", "full stack", "full-stack", "frontend", "front-end", "backend", "back-end", "devops"]),
 ]
 
 
@@ -48,7 +73,49 @@ def link_parts(cell):
     return match.group(1).strip(), match.group(2).strip()
 
 
-def jobs_from_jobright(text, source_name):
+def posted_time(text):
+    """Turn a Jobright date like 'Nov 20' into a timestamp."""
+    try:
+        when = datetime.strptime(text.strip(), "%b %d")
+    except ValueError:
+        return 0
+    when = when.replace(year=datetime.now().year)
+    if when - datetime.now() > timedelta(days=1):
+        when = when.replace(year=datetime.now().year - 1)
+    return when.timestamp()
+
+
+def is_nyc(location):
+    text = location.lower().strip()
+    # "New York, NY" is the city. "Liverpool, New York" is not.
+    if text.startswith("new york"):
+        return True
+    phrases = [
+        "nyc",
+        "new york, ny",
+        "new york ny",
+        "manhattan",
+        "brooklyn, ny",
+        "queens, ny",
+        "bronx, ny",
+        "staten island",
+        "long island city",
+        "harlem",
+    ]
+    for phrase in phrases:
+        if phrase in text:
+            return True
+    return False
+
+
+def is_recent(posted):
+    if not posted:
+        return False
+    age_days = (datetime.now().timestamp() - posted) / 86400
+    return -1 <= age_days <= RECENT_DAYS
+
+
+def jobs_from_jobright(text, source_name, kind):
     jobs = []
     last_company = ""
 
@@ -72,7 +139,10 @@ def jobs_from_jobright(text, source_name):
         title, link = link_parts(cells[1])
         if title == "" or link == "":
             continue
+        if kind == "job" and "intern" in title.lower():
+            continue
 
+        posted = posted_time(cells[4]) if len(cells) >= 5 else 0
         jobs.append(
             {
                 "company": company,
@@ -80,24 +150,34 @@ def jobs_from_jobright(text, source_name):
                 "location": cells[2],
                 "link": link,
                 "source": source_name,
+                "kind": kind,
+                "posted": posted,
             }
         )
 
     return jobs
 
 
-def is_cs_title(title):
-    lowered = title.lower()
-    for word in CS_WORDS:
-        if word in lowered:
+def is_blocked(company):
+    name = company.lower()
+    for blocked in BLOCKED_COMPANIES:
+        if blocked in name:
             return True
-    # "AI Intern" does not contain the words above.
-    if lowered.startswith("ai ") or " ai " in f" {lowered} ":
-        return True
     return False
 
 
-def jobs_from_simplify(text):
+def role_category(title):
+    lowered = title.lower()
+    if lowered.startswith("ai ") or lowered.startswith("ai/") or " ai " in f" {lowered} ":
+        return "ai"
+    for category, phrases in ROLE_PHRASES:
+        for phrase in phrases:
+            if phrase in lowered:
+                return category
+    return ""
+
+
+def jobs_from_simplify(text, source_name, kind):
     data = json.loads(text)
     if not isinstance(data, list):
         return []
@@ -109,7 +189,9 @@ def jobs_from_simplify(text):
 
         title = item.get("title") or ""
         link = item.get("url") or ""
-        if link == "" or not is_cs_title(title):
+        if link == "" or role_category(title) == "":
+            continue
+        if kind == "job" and "intern" in title.lower():
             continue
 
         places = item.get("locations") or []
@@ -124,7 +206,9 @@ def jobs_from_simplify(text):
                 "title": title,
                 "location": location,
                 "link": link,
-                "source": "Simplify",
+                "source": source_name,
+                "kind": kind,
+                "posted": item.get("date_posted") or 0,
             }
         )
 
@@ -135,20 +219,21 @@ def get_all_jobs():
     found = []
     downloaded = False
 
-    for url, source_name in JOBRIGHT_LISTS:
+    for url, source_name, kind in JOBRIGHT_LISTS:
         try:
             text = get_text(url)
-            found.extend(jobs_from_jobright(text, source_name))
+            found.extend(jobs_from_jobright(text, source_name, kind))
             downloaded = True
         except Exception as error:
             print("Could not read Jobright list:", error)
 
-    try:
-        text = get_text(SIMPLIFY_URL)
-        found.extend(jobs_from_simplify(text))
-        downloaded = True
-    except Exception as error:
-        print("Could not read Simplify list:", error)
+    for url, source_name, kind in SIMPLIFY_LISTS:
+        try:
+            text = get_text(url)
+            found.extend(jobs_from_simplify(text, source_name, kind))
+            downloaded = True
+        except Exception as error:
+            print("Could not read Simplify list:", error)
 
     if not downloaded:
         return None
@@ -164,13 +249,54 @@ def get_all_jobs():
     return unique
 
 
+def pick_mixed(all_jobs, seen, kind, limit):
+    buckets = {"swe": [], "data": [], "ai": [], "cyber": []}
+    for job in all_jobs:
+        if job["kind"] != kind or job["link"] in seen or is_blocked(job["company"]):
+            continue
+        if not is_nyc(job["location"]) or not is_recent(job["posted"]):
+            continue
+        category = role_category(job["title"])
+        if category == "":
+            continue
+        buckets[category].append(job)
+
+    for items in buckets.values():
+        items.sort(key=lambda job: job["posted"], reverse=True)
+
+    # Rotate the starting field each hour so one field does not crowd out the others.
+    order = ["swe", "data", "ai", "cyber"]
+    start = datetime.now().hour % len(order)
+    order = order[start:] + order[:start]
+
+    picked = []
+    used_links = set()
+    for category in order:
+        if len(picked) >= limit:
+            break
+        for job in buckets[category]:
+            picked.append(job)
+            used_links.add(job["link"])
+            break
+
+    rest = []
+    for category in order:
+        rest.extend(buckets[category])
+    rest.sort(key=lambda job: job["posted"], reverse=True)
+    for job in rest:
+        if len(picked) >= limit:
+            break
+        if job["link"] not in used_links:
+            picked.append(job)
+            used_links.add(job["link"])
+    return picked
+
+
 def get_new_jobs(seen):
     all_jobs = get_all_jobs()
     if all_jobs is None:
         return None
 
-    new_jobs = []
-    for job in all_jobs:
-        if job["link"] not in seen:
-            new_jobs.append(job)
-    return new_jobs
+    internships = pick_mixed(all_jobs, seen, "internship", INTERNSHIP_LIMIT)
+    full_time = pick_mixed(all_jobs, seen, "job", JOB_LIMIT)
+    return internships + full_time

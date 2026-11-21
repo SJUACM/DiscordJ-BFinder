@@ -4,10 +4,11 @@ This bot checks public GitHub internship lists and posts new roles in `#internsh
 
 It reads:
 
-- Jobright's public GitHub READMEs for software and data internships
+- Jobright's public GitHub READMEs for software and data internships and new-grad jobs
 - [SimplifyJobs/Summer2027-Internships](https://github.com/SimplifyJobs/Summer2027-Internships)
+- [SimplifyJobs/New-Grad-Positions](https://github.com/SimplifyJobs/New-Grad-Positions)
 
-The first time it runs, it remembers the jobs already on those lists and sends one line: "Watching for new internships." After that, it checks every hour and posts only new ones, up to 8 each check.
+It keeps New York City roles in software engineering, data science, AI, and cybersecurity. Palantir is skipped. Every hour it posts up to 3 recent internships and 2 recent full-time jobs.
 
 ## Setup
 
@@ -31,4 +32,4 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The bot then starts when you log in to this Mac and checks for new internships every hour. You do not need to run it from a terminal. Output is written to `bot.log`.
+The bot then starts when you log in to this Mac and checks every hour. You do not need to run it from a terminal. Output is written to `bot.log`.
